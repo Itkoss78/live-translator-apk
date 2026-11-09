@@ -51,6 +51,22 @@ class MainActivity : Activity() {
         status = TextView(this).apply { textSize = 15f; setPadding(0, dp(6), 0, dp(6)) }
         root.addView(status)
 
+        // Test
+        title("Test")
+        val testOut = TextView(this).apply { textSize = 13f; setPadding(0, dp(4), 0, dp(4)) }
+        button("Tester la traduction") {
+            saveProviderFields()
+            testOut.text = "Test en cours…"
+            scope.launch {
+                val src = listOf("你好，欢迎光临", "确认订单", "购物车")
+                val r = router.translate(src, prefs)
+                testOut.text = "Moteur : ${r.engine}\n" + src.indices.joinToString("\n") { "${src[it]} → ${r.lines[it]}" } +
+                    (r.error?.let { "\n⚠️ Erreur en ligne : $it" } ?: "") +
+                    (if (r.lines == src) "\n❌ Rien traduit : clé API absente/invalide et langues hors-ligne non téléchargées" else "")
+            }
+        }
+        root.addView(testOut)
+
         // 1 · Accessibilité
         title("1 · Activer le service")
         note("Accessibilité → Applications installées → Live Translator → Activer.\n" +
@@ -145,10 +161,15 @@ class MainActivity : Activity() {
     }
 
     private fun refreshStatus() {
-        val svc = if (serviceEnabled()) "✅ Service actif" else "⚠️ Service désactivé (étape 1)"
+        val svc = when {
+            !serviceEnabled() -> "⚠️ Service désactivé (étape 1)"
+            !ScreenTranslatorService.running -> "⚠️ Service activé mais coupé par le système : désactive / réactive-le"
+            else -> "✅ Service actif"
+        }
         val p = prefs.provider
         val online = if (prefs.key(p).isBlank()) "⚠️ Pas de clé ${p.label} → hors-ligne seulement" else "✅ ${p.label} configuré"
-        status.text = "$svc\n$online\nCible : ${Languages.name(prefs.target)}"
+        status.text = "$svc\n$online\nCible : ${Languages.name(prefs.target)}" +
+            "\n\nDernier écran : ${ScreenTranslatorService.diag}"
     }
 
     private fun loadProviderFields() {

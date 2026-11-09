@@ -12,6 +12,7 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.TextView
+import android.widget.Toast
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -29,6 +30,12 @@ import kotlin.math.abs
  * Une bulle flottante « 译 » active / désactive l'affichage (pour revoir l'original).
  */
 class ScreenTranslatorService : AccessibilityService() {
+
+    companion object {
+        /** Dernier diagnostic, affiché dans l'app et par appui long sur la bulle. */
+        @Volatile var diag: String = "Service jamais démarré"
+        @Volatile var running = false
+    }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private lateinit var wm: WindowManager
@@ -54,6 +61,9 @@ class ScreenTranslatorService : AccessibilityService() {
     override fun onServiceConnected() {
         prefs = Prefs(this)
         wm = getSystemService(WindowManager::class.java)
+        running = true
+        diag = "Service actif — ouvre une app chinoise"
+        Toast.makeText(this, "Live Translator actif", Toast.LENGTH_SHORT).show()
         visible = prefs.enabled
         addOverlay()
         addBubble()
@@ -63,6 +73,8 @@ class ScreenTranslatorService : AccessibilityService() {
     override fun onInterrupt() {}
 
     override fun onDestroy() {
+        running = false
+        diag = "Service arrêté par le système"
         scope.cancel()
         overlay?.let { runCatching { wm.removeView(it) } }
         bubble?.let { runCatching { wm.removeView(it) } }
@@ -103,14 +115,18 @@ class ScreenTranslatorService : AccessibilityService() {
     // ---------- Lecture de l'écran ----------
 
     private fun scan() {
-        val root = rootInActiveWindow ?: return
-        if (root.packageName?.toString() == packageName) { overlay?.clear(); return }
+        val root = rootInActiveWindow ?: run { diag = "Impossible de lire la fenêtre active"; return }
+        val pkg = root.packageName?.toString() ?: "?"
+        if (pkg == packageName) { overlay?.clear(); return }
 
         val dm = resources.displayMetrics
         val screen = Rect(0, 0, dm.widthPixels, dm.heightPixels + dp(200))
         val nodes = ArrayList<Pair<Rect, String>>()
         collect(root, nodes, 0, screen)
-        if (nodes.isEmpty()) { overlay?.clear(); return }
+        if (nodes.isEmpty()) {
+            diag = "0 texte lisible dans $pkg → cette app dessine son texte en image (OCR nécessaire)"
+            overlay?.clear(); return
+        }
 
         val texts = nodes.map { it.second }
         latestTexts = texts
@@ -128,6 +144,10 @@ class ScreenTranslatorService : AccessibilityService() {
             val r = router.translate(texts, prefs)
             lastTexts = texts
             lastLines = r.lines
+            val changed = r.lines.indices.count { r.lines[it] != texts[it] }
+            diag = "${texts.size} textes lus dans $pkg · ${r.engine} · $changed traduits" +
+                (r.error?.let { "\nErreur en ligne : ${it.take(150)}" } ?: "") +
+                (if (!r.online && changed == 0) "\nHors-ligne : langues non téléchargées ?" else "")
             setBubbleState(when {
                 r.online -> State.ONLINE
                 r.error != null -> State.ERROR
@@ -206,11 +226,12 @@ class ScreenTranslatorService : AccessibilityService() {
         }
 
         val slop = ViewConfiguration.get(this).scaledTouchSlop
-        var downX = 0f; var downY = 0f; var startX = 0; var startY = 0; var dragging = false
+        var downX = 0f; var downY = 0f; var startX = 0; var startY = 0; var dragging = false; var downAt = 0L
         tv.setOnTouchListener { _, e ->
             when (e.action) {
                 MotionEvent.ACTION_DOWN -> {
                     downX = e.rawX; downY = e.rawY; startX = lp.x; startY = lp.y; dragging = false
+                    downAt = System.currentTimeMillis()
                 }
                 MotionEvent.ACTION_MOVE -> {
                     val dx = e.rawX - downX; val dy = e.rawY - downY
@@ -220,7 +241,10 @@ class ScreenTranslatorService : AccessibilityService() {
                         wm.updateViewLayout(tv, lp)
                     }
                 }
-                MotionEvent.ACTION_UP -> if (!dragging) toggle()
+                MotionEvent.ACTION_UP -> if (!dragging) {
+                    if (System.currentTimeMillis() - downAt > 500) Toast.makeText(this, diag, Toast.LENGTH_LONG).show()
+                    else toggle()
+                }
             }
             true
         }
